@@ -79,7 +79,7 @@ Now lets fit the sloan neutral model to our data. I will do this for the entire 
 
 Burns, A., Stephens, W., Stagaman, K. et al. Contribution of neutral processes to the assembly of gut microbial communities in the zebrafish over host development. ISME J 10, 655–664 (2016) doi:10.1038/ismej.2015.142
 
-```{r, message=FALSE, warning=FALSE, echo=FALSE}
+```{r, message=FALSE, warning=FALSE}
 ## Code adapted from Adam Burns (http://dx.doi.org/10.1038/ismej.2015.142)
 require(minpack.lm)
 require(Hmisc)

@@ -91,6 +91,71 @@ processes to the assembly of gut microbial communities in the zebrafish
 over host development. ISME J 10, 655–664 (2016)
 <doi:10.1038/ismej.2015.142>
 
+``` r
+## Code adapted from Adam Burns (http://dx.doi.org/10.1038/ismej.2015.142)
+require(minpack.lm)
+require(Hmisc)
+require(stats4)
+# Extract the OTU table from pthe phyloseq object
+OTU.table = t(otu_table(bulk.physeq.rare))
+
+# Calculate the number of individuals in the meta community (Average read depth)
+N <- mean(apply(OTU.table, 1, sum))
+
+# Calculate the average relative abundance of each taxa across communities
+p.m <- apply(OTU.table, 2, mean)
+p.m <- p.m[p.m != 0]
+p <- p.m/N
+p.df = data.frame(p) %>%
+  rownames_to_column(var="OTU")
+
+# Calculate the occurrence frequency of each taxa
+OTU.table.bi <- 1*(OTU.table>0)
+freq.table <- apply(OTU.table.bi, 2, mean)
+freq.table <- freq.table[freq.table != 0]
+freq.df = data.frame(OTU=names(freq.table), freq=freq.table)
+
+#Combine
+C <- inner_join(p.df,freq.df, by="OTU") %>%
+  arrange(p)
+# Remove rows with any zero (absent in either source pool or local communities). You already did this, but just to make sure we will do it again.
+C.no0 <- C %>%
+  filter(freq != 0, p != 0)
+
+#Calculate the limit of detection
+d <- 1/N
+
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+p.list <- C.no0$p
+freq.list <- C.no0$freq
+m.fit <- nlsLM(freq.list ~ pbeta(d, N*m*p.list, N*m*(1-p.list), lower.tail=FALSE), start=list(m=0.1))
+m.ci <- confint(m.fit, 'm', level=0.95)
+m.sum <- summary(m.fit)
+m.coef = coef(m.fit)
+
+freq.pred <- pbeta(d, N*coef(m.fit)*p.list, N*coef(m.fit)*(1-p.list), lower.tail=FALSE)
+Rsqr <- 1 - (sum((freq.list - freq.pred)^2))/(sum((freq.list - mean(freq.list))^2))
+
+# Get table of model fit stats
+fitstats <- data.frame(m=m.coef, m.low.ci=m.ci[1], m.up.ci=m.ci[2], 
+                       Rsqr=Rsqr, p.value=m.sum$parameters[4], N=N, 
+                       Samples=nrow(OTU.table), Richness=length(p.list), 
+                       Detect=d)
+
+# Get confidence interval for predictions
+freq.pred.ci <- binconf(freq.pred*nrow(OTU.table), nrow(OTU.table), alpha=0.05, method="wilson", return.df=TRUE)
+
+# Get table of predictions
+pred.df <- data.frame(metacomm_RA=p.list, frequency=freq.pred, 
+                      frequency_lowerCI=freq.pred.ci[,2], 
+                      frequency_upperCI=freq.pred.ci[,3]) %>%
+  unique()
+
+# Get table of observed occupancy and abundance
+obs.df = C.no0 %>%
+  rename(metacomm_RA = p, frequency=freq)
+```
+
 Plot the model and observed occupancy and metacommunity abundance
 values.
 
