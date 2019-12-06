@@ -38,5 +38,9 @@ Here is a brief description of each of the files:
 
   * Figure 3
   * Figure 5
+  
+## License
+
+This is provided under the MIT license. See [LICENSE](./LICENSE) for more information.
 
 
