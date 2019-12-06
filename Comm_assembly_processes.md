@@ -13,12 +13,14 @@ RCbray values are calculated here
 
 This analysis values for significance testing as in Stegen et al. 2012
 and Stegen et al. 2013. This means that the following conclusison can be
-drawn from this data: βNTI \> 2: Community assembly driven by variable
-selection βNTI \< -2: Community assembly driven by homgenizing selection
-|βNTI| \< 2 & RCbray \> 0.95: Community assembly driven by dispersal
-limitation |βNTI| \< 2 & RCbray \< -0.95: Community assembly driven by
-homogenizing dispersal |βNTI| \< 2 & |RCbray| \< 0.95: Community
-assembly is due to drift alone (or weak selection)
+drawn from this data:
+
+βNTI \> 2: Community assembly driven by variable selection βNTI \< -2:
+Community assembly driven by homgenizing selection |βNTI| \< 2 & RCbray
+\> 0.95: Community assembly driven by dispersal limitation |βNTI| \< 2 &
+RCbray \< -0.95: Community assembly driven by homogenizing dispersal
+|βNTI| \< 2 & |RCbray| \< 0.95: Community assembly is due to drift
+alone (or weak selection)
 
 Please note that some of these cell have eval=FALSE in the rmarkdown
 version so that they wont run when knitted. This was done because they

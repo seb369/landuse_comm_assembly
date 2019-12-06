@@ -15,6 +15,7 @@ output:
 In the following analysis we will be using both βNTI and RCbray to examine the processes driving community assembly across land use regime and pH groups. βNTI values were calculated in bNTI_calculations.Rmd and RCbray values are calculated here
 
 This analysis values for significance testing as in Stegen et al. 2012 and Stegen et al. 2013. This means that the following conclusison can be drawn from this data:
+
   βNTI > 2: Community assembly driven by variable selection
   βNTI < -2: Community assembly driven by homgenizing selection
   |βNTI| < 2 & RCbray > 0.95: Community assembly driven by dispersal limitation
