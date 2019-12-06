@@ -148,7 +148,7 @@ write.table(full.bNTI.df, "/home/sam/data/fullcyc2_data/Final_data/community_ass
 
 What does this table look like?
 
-```{r, message=FALSE, warning=FALSE, eval=FALSE}
+```{r, message=FALSE, warning=FALSE}
 head(read.table("/home/sam/data/fullCyc2_data/Final_data/community_assembly/full_bNTI.txt"))
 ```
 
