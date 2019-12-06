@@ -1,0 +1,793 @@
+---
+title: "Alpha and Beta diversity across habitat"
+author: "Samuel Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+    html_preview: false
+---
+
+## Introduction
+
+This notebook goes through the basic alpha and beta diveristy analysis. This will also include analysis on abiotic drivers of bacterial betadiversity with CAP analysis.
+
+### Initiate libraries
+```{r, message=FALSE, warning=FALSE}
+# Packages needed for analysis
+library(dplyr)
+library(tibble)
+library(phyloseq)
+library(ape)
+library(vegan)
+library(FSA)
+
+# Packages needed for plotting
+library(ggplot2)
+library(ggrepel)
+
+# Function for pulling out legends
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+```
+
+### Import data
+
+```{r, message=FALSE, warning=FALSE}
+# Import bulk soil phyloseq data
+bulk.physeq = readRDS("/home/sam/data/fullCyc2_data/bulk_soil_physeq.RDS")
+
+## Check how many reads you have in each of the samples. This will tell you if you need to re-do anything
+# Get read counts and make a new dataframe with this data
+read_count = data.frame("count" = colSums(otu_table(bulk.physeq))) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(-count) %>%
+  mutate(X.Sample=factor(X.Sample, levels=X.Sample))
+
+# Now plot read count for each sample. The horizontal line represents a 2000 read threshold
+ggplot(data=read_count, aes(x=X.Sample, y=log10(count), fill=ecosystem)) +
+  geom_bar(stat="identity") +
+  labs(x="Sample", y="Log10(Read count)") +
+  geom_hline(yintercept=log10(10000)) +
+  theme(text = element_text(size=16),
+        axis.text.x = element_blank())
+# Everything seems to be at or above 10000 total reads
+
+bulk.physeq
+```
+
+All samples have over 10,000 reads except for one of the forest samples that is just about at 10,000 reads, which is great. We don't need to remove any datasets for lack of sequences.
+
+Now we need to rarefy the data to normalize the sequencing depth. We should also get a normalized dataset which gives relative abundance rather than readcounts.
+
+```{r, message=FALSE, warning=FALSE}
+# Rarefy to an even depth
+set.seed(72)  # setting seed for reproducibility
+bulk.physeq.rare = rarefy_even_depth(bulk.physeq)
+
+# Normalize read counts (this gives relative abundance)
+bulk.physeq.norm = transform_sample_counts(bulk.physeq.rare, function(x) x/sum(x))
+
+```
+
+
+## Alpha diversity
+
+Lets look at the alpha diversity of between soil habitats and between sites.
+
+### Richness
+
+First look at the number of unique OTUs in each sample across land use regimes
+
+```{r, fig.height=4, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+## Get the OTU counts
+metadata = data.frame(sample_data(bulk.physeq))
+OTU.table.bin = otu_table(bulk.physeq.rare)
+OTU.table.bin[OTU.table.bin != 0] = 1
+OTU_count = data.frame("count" = colSums(OTU.table.bin)) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(X.Sample) %>%
+  mutate(sample_ID=factor(X.Sample, levels=X.Sample))
+
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test:")
+k.test = kruskal.test(count ~ ecosystem, data = OTU_count)
+print(k.test)
+if (k.test$p.value <= 0.05){
+  writeLines(c("", "There is a significant effect of sample type on OTU number. Now running Dunn test for pairwise comparisons:"))
+  d.test = dunnTest(count ~ ecosystem, data = OTU_count, method = "bh")
+  print(d.test)
+} else{
+  writeLines(c("", "We did not find a significant effect of sample type on OTU number."))
+}
+
+# plot data as a box and wisker plot but overlay with samples colored by field site
+ggplot(data=OTU_count, aes(x=ecosystem, y=count)) +
+  geom_boxplot(outlier.shape=8) +
+  geom_jitter(aes(color=ecosystem), width = 0.2, height = 0) +
+  labs(x="Habitat", y="Number of unique OTUs", color="Habitat") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5)) +
+  annotate("text", label="*", x=1.5, y=2050, size=5) +
+  annotate("segment", x=c(1,1,2), xend=c(1,2,2), y=c(2020,2040,2040), yend=c(2040,2040,2020))
+```
+
+We see that the number of OTUs differs significantly by habitat, and that this is driven by a significant differences between agriculture and forest.
+
+### Shannon index
+
+Now I'll look at Shannon index, which takes into account OTU abundance.
+
+```{r, fig.height=4, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+## Get the OTU counts
+metadata = data.frame(sample_data(bulk.physeq))
+OTU.table.bin = t(otu_table(bulk.physeq.rare))
+shannon.df = data.frame(shannon=diversity(OTU.table.bin, index="shannon")) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(ecosystem)
+
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test:")
+k.test = kruskal.test(shannon ~ ecosystem, data = shannon.df)
+print(k.test)
+if (k.test$p.value <= 0.05){
+  writeLines(c("", "There is a significant effect of sample type on Shannon index. Now running Dunn test for pairwise comparisons:"))
+  d.test = dunnTest(shannon ~ ecosystem, data = shannon.df, method = "bh")
+  print(d.test)
+} else{
+  writeLines(c("", "We did not find a significant effect of sample type on OTU number."))
+}
+# plot data as a box and wisker plot but overlay with samples colored by field site
+ggplot(data=shannon.df, aes(x=ecosystem, y=shannon)) +
+  geom_boxplot(outlier.shape=8) +
+  geom_jitter(aes(color=ecosystem), width = 0.2, height = 0) +
+  labs(x="Habitat", y="Shannon index", color="Habitat") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5)) +
+  annotate("text", label=c("***", "*"), x=c(1.5, 2), y=c(6.83, 6.89), size=5) +
+  annotate("segment", x=c(1,1,2, 1,1,3), xend=c(1,2,2, 1,3,3), y=c(6.8,6.82,6.82, 6.86,6.88,6.88), yend=c(6.82,6.82,6.8,  6.88,6.88,6.86))
+
+```
+
+Again we see a significant difference in Shannon index between habitats. This was driven by significant differences between agriculture and both forest and meadow. Agriculture has the highest alpha diversity of the three habitats.
+
+
+### Plot alpha diversity plots together
+
+Plot both richness and shannon diversity together for publication
+
+```{r, fig.height=3.14961, fig.width=4.48819, message=FALSE, warning=FALSE, echo=FALSE}
+# Land use shapes
+LandUse.shapes = c("Cropland" = 15, "Old-field" = 16, "Forest" = 17)
+# Convert land use names
+ecosystem.conv = data.frame(ecosystem = c("agriculture", "meadow", "forest"), ecosystem2 = c("Cropland", "Old-field", "Forest"))
+OTU_count = left_join(OTU_count, ecosystem.conv)
+shannon.df = left_join(shannon.df, ecosystem.conv)
+OTU_count$ecosystem2 = factor(OTU_count$ecosystem2, levels = c("Cropland", "Old-field", "Forest"))
+shannon.df$ecosystem2 = factor(shannon.df$ecosystem2, levels = c("Cropland", "Old-field", "Forest"))
+
+# Plot
+rich.plot = ggplot(data=OTU_count, aes(x=ecosystem2, y=count)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, height = 0, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="OTU richness") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position="none") +
+  annotate("text", label="*", x=2, y=2050, size=4) +
+  annotate("segment", x=c(1,1,3), xend=c(1,3,3), 
+           y=c(2030,2050,2050), yend=c(2050,2050,2030), size=0.5)
+
+shan.plot = ggplot(data=shannon.df, aes(x=ecosystem2, y=shannon)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, height = 0, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="Shannon index") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position="none") +
+  annotate("text", label=c("*", "***"), x=c(1.5, 2), y=c(6.84, 6.90), size=4) +
+  annotate("segment", x=c(1,1,2, 1,1,3), xend=c(1,2,2, 1,3,3), 
+           y=c(6.82,6.84,6.84, 6.88,6.90,6.90), yend=c(6.84,6.84,6.82,  6.90,6.90,6.88), size=0.5)
+
+fonttheme = theme(legend.text = element_text(size=12),
+                  legend.title = element_text(size=12),
+                  axis.text = element_text(size=12),
+                  axis.title = element_text(size=14))
+
+# Merge plots
+alpha.plot = cowplot::plot_grid(rich.plot + fonttheme, shan.plot + fonttheme, ncol=2, rel_widths = c(1, 1), labels = c("A", "B"))
+alpha.plot
+
+#ggsave("alphadiv.tiff", plot=alpha.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=114, height=80, units="mm", dpi=600)
+
+```
+
+
+## Beta diveristy
+
+Now lets look at the community composition across the region and how the communities differ across land use regimes. There are a number of different metrics to use but I will focus on weighted UniFrac. I will also run a similar analysis with unweighted UniFrac and Bray-Curtis.
+
+### Weighted UniFrac
+
+#### Ordination
+First lets plot the ordination showing the relation of our samples.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+metadata = data.frame(sample_data(bulk.physeq.norm))
+set.seed(72)
+wuf.ord = ordinate(bulk.physeq.norm, "PCoA", distance="unifrac", weighted=TRUE)
+Xaxis = paste("PCo1 (", round(wuf.ord$values[1,2]*100, digits=2), "%)", sep="")
+Yaxis = paste("PCo2 (", round(wuf.ord$values[2,2]*100, digits=2), "%)", sep="")
+
+wuf.ord.df = data.frame(wuf.ord$vectors) %>%
+  rownames_to_column(var="X.Sample") %>%
+  select(X.Sample, Axis.1, Axis.2)
+
+wuf.ord.df = full_join(wuf.ord.df, metadata, by="X.Sample")
+
+ord.plot = ggplot(data=wuf.ord.df, aes(x=Axis.1, y=Axis.2, color=ecosystem)) +
+  geom_point(size=3) +
+  stat_ellipse(linetype=2, alpha=.5) +
+  labs(x=Xaxis, y=Yaxis, color="Habitat") +
+  theme(text = element_text(size=16),
+        legend.background=NULL)
+
+ord.leg = g_legend(ord.plot)
+ord.plot = ord.plot + theme(legend.position="none")
+
+ord.leg.plot = ord.plot + annotation_custom(ord.leg, xmin=0.2, ymin=0.1)
+ord.leg.plot
+```
+
+
+#### Permanova
+
+Lets run a permanova analysis to see if land use significant explains community compositional variation.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+metadata = data.frame(sample_data(bulk.physeq))
+wuf.dist = phyloseq::distance(bulk.physeq.norm, "wunifrac")
+set.seed(72)
+wuf.adon = adonis(wuf.dist ~ ecosystem, data=metadata)
+wuf.adon
+
+ord.leg.plot + annotate("text", label=paste("R2 = ", round(wuf.adon$aov.tab$R2[1],3),
+                                            "\npvalue = ", round(wuf.adon$aov.tab$`Pr(>F)`[1],3)), 
+                        x=-0.2, y=0.2, size=5)
+
+```
+
+Land use significantly explains community compositional variation.
+
+### Unweighted UniFrac.
+
+For this analysis we will examine the microbial community composition across land use using unweighted unifrac. This means that this analysis will not take abundance into account.
+
+#### Ordination
+
+First lets plot the ordination showing the relation of our samples.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+set.seed(72)
+uf.ord = ordinate(bulk.physeq.norm, "PCoA", distance="unifrac", weighted=FALSE)
+Xaxis = paste("PCo1 (", round(uf.ord$values[1,2]*100, digits=2), "%)", sep="")
+Yaxis = paste("PCo2 (", round(uf.ord$values[2,2]*100, digits=2), "%)", sep="")
+
+uf.ord.df = data.frame(uf.ord$vectors) %>%
+  rownames_to_column(var="X.Sample") %>%
+  select(X.Sample, Axis.1, Axis.2)
+
+uf.ord.df = full_join(uf.ord.df, metadata, by="X.Sample")
+
+ord.plot = ggplot(data=uf.ord.df, aes(x=Axis.1, y=Axis.2, color=ecosystem)) +
+  geom_point(size=3) +
+  stat_ellipse(linetype=2, alpha=.5) +
+  labs(x=Xaxis, y=Yaxis, color="Habitat") +
+  theme(text = element_text(size=16),
+        legend.background=NULL)
+
+ord.leg = g_legend(ord.plot)
+ord.plot = ord.plot + theme(legend.position="none")
+
+ord.leg.plot = ord.plot + annotation_custom(ord.leg, xmin=0.4, ymin=-1.0)
+ord.leg.plot
+
+```
+
+#### Permanova
+
+Lets run a permanova analysis to see if land use significant explains community compositional variation.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+uf.dist = phyloseq::distance(bulk.physeq.norm, "unifrac")
+set.seed(72)
+uf.adon = adonis(uf.dist ~ ecosystem, metadata)
+uf.adon
+
+ord.leg.plot + annotate("text", label=paste("R2 = ", round(uf.adon$aov.tab$R2[1],3),
+                                            "\npvalue = ", round(uf.adon$aov.tab$`Pr(>F)`[1],3)), 
+                        x=-0.4, y=0.35, size=5)
+```
+
+Again land use significantly explains community compositional variation.
+
+### Bray-Curtis.
+
+For this analysis we will examine the microbial community composition across land use using Bray-Curtis dissimilarity. Unlike unifrac, this analysis does not take into account the phylogeny of the OTUs
+
+#### Ordination
+
+First lets plot the ordination showing the relation of our samples.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+# First, extract an OTU table from your phyloseq
+otu.table = t(otu_table(bulk.physeq.norm))
+
+# Now make your distance matrix
+bc.dist = vegdist(otu.table, method="bray", binary=FALSE)
+
+# Now scale with NMDS and plot
+set.seed(72)
+bc.ord = metaMDS(bc.dist)
+bc.ord.df = data.frame(bc.ord$points) %>%
+  rownames_to_column(var="X.Sample") %>%
+  full_join(metadata)
+
+ord.plot = ggplot(data=bc.ord.df, aes(x=MDS1, y=MDS2, color=ecosystem)) +
+  geom_point(size=3) +
+  stat_ellipse(linetype=2, alpha=.5) +
+  labs(x="NMDS1", y="NMDS2", color="Habitat") +
+  theme(text = element_text(size=16),
+        legend.background=NULL)
+
+ord.leg = g_legend(ord.plot)
+ord.plot = ord.plot + theme(legend.position="none")
+
+ord.leg.plot = ord.plot + annotation_custom(ord.leg, xmin=0.45, ymin=-0.8)
+ord.leg.plot
+
+```
+
+### Permanova
+
+Lets run a permanova analysis to see if there are significant effects of habitat on community composition.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+set.seed(72)
+bc.adon = adonis(bc.dist ~ ecosystem, metadata)
+bc.adon
+
+ord.leg.plot + annotate("text", label=paste("R2 = ", round(bc.adon$aov.tab$R2[1],3),
+                                            "\npvalue = ", round(bc.adon$aov.tab$`Pr(>F)`[1],3)), 
+                        x=-0.4, y=-0.3, size=5)
+```
+
+Again land use significantly explains community compositional variation.
+
+## Soil properties and community composition
+
+In addition to extracting DNA we also measured some aspects of the soil properties for each soil sample. This soil property data includes pH, moisture at collection, tempurature at collection, C:N ratio, and percent organic carbon. We also measured the soil texture. For more details on how these were measured please see methods section of manuscript. Here I want to see how these soil properties explain variation in community composition.
+
+### Soil properties between habitats
+
+The first thing I will do is just examine how soil properties differs between habitats.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3.14961, fig.width=6.61417}
+# Land use shapes
+LandUse.shapes = c("Cropland" = 15, "Old-field" = 16, "Forest" = 17)
+
+# Extract soil metadata
+metadata = data.frame(sample_data(bulk.physeq.norm), stringsAsFactors = F) %>%
+  rename(soil_temp = in_situ_soil_temp,
+         percent_organic_matter = organic_content_perc,
+         sand = sand__perc, silt = silt__perc, clay = clay__perc) %>%
+  mutate(C.N_ratio = percent_C/percent_N,
+         location = gsub("_", " ", location))
+ecosystem.conv = data.frame(ecosystem = c("agriculture", "meadow", "forest"), ecosystem2 = c("Cropland", "Old-field", "Forest"))
+metadata = left_join(metadata, ecosystem.conv)
+metadata$ecosystem2 = factor(metadata$ecosystem2, levels = c("Cropland", "Old-field", "Forest"))
+
+metadata$ecosystem = factor(metadata$ecosystem, levels = c("agriculture", "meadow", "forest"))
+
+# pH
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test for pH:")
+k.test = kruskal.test(pH ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("I did not find a significant effect of habitat on pH.")
+writeLines("\n--------------------\n")
+pH.plot = ggplot(data=metadata, aes(x=ecosystem2, y=pH))+
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="pH", title="pH") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        axis.text = element_text(size=12),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+# Moisture
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test on moisture:")
+k.test = kruskal.test(moisture ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("There is a significant effect of habitat on moisture. Now running Dunn test for pairwise comparisons:\n")
+d.test = dunnTest(moisture ~ ecosystem2, data = metadata, method = "bh")
+print(d.test)
+writeLines("\n--------------------\n")
+
+# Temperature
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test on soil temp:")
+k.test = kruskal.test(soil_temp ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("I did not find a significant effect of habitat on soil temp")
+writeLines("\n--------------------\n")
+
+# C:N ratio
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test on C:N ratio:")
+k.test = kruskal.test(C.N_ratio ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("There is a significant effect of habitat on C:N ratio. Now running Dunn test for pairwise comparisons:\n")
+d.test = dunnTest(C.N_ratio ~ ecosystem2, data = metadata, method = "bh")
+print(d.test)
+writeLines("\n--------------------\n")
+dunn.res = d.test$res %>% mutate(property = "CN")
+
+CN.plot = ggplot(data=metadata, aes(x=ecosystem2, y=C.N_ratio))+
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="C:N ratio", title="C:N ratio") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        axis.text = element_text(size=12),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none") +
+  annotate("text", label=c("***","*", "*"), x=c(2, 2.5, 1.5), y=c(19.3, 18.8, 18.4), size=4) +
+  annotate("segment", x=c(1,1,3, 2,2,3, 1,1,2), xend=c(1,3,3, 2,3,3, 1,2,2), 
+           y=c(19.1,19.3,19.3, 18.6,18.8,18.8, 18.2,18.4,18.4), yend=c(19.3,19.3,19.1, 18.8,18.8,18.6, 18.4,18.4,18.2), size=0.5)
+
+# Percent organic matter
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test on percent organic matter:")
+k.test = kruskal.test(percent_organic_matter ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("There is a significant effect of habitat on percent organic matter. Now running Dunn test for pairwise comparisons:\n")
+d.test = dunnTest(percent_organic_matter ~ ecosystem2, data = metadata, method = "bh")
+print(d.test)
+writeLines("\n--------------------\n")
+dunn.res = rbind(dunn.res, d.test$res %>% mutate(property = "SOC"))
+
+SOC.plot = ggplot(data=metadata, aes(x=ecosystem2, y=percent_organic_matter))+
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="SOM (%)", title="SOM") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        axis.text = element_text(size=12),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none") +
+  annotate("text", label=c("**"), x=c(2), y=c(0.205), size=4) +
+  annotate("segment", x=c(1,1,3), xend=c(1,3,3), 
+           y=c(0.2,0.205,0.205), yend=c(0.205,0.205,0.2), size=0.5)
+
+# Percent sand (Soil Texture)
+## Run a Kruskal-Wallis test to see if there are signifiant differences in OTU count between habitats.
+writeLines("Kruskal-Wallis test on percent sand:")
+k.test = kruskal.test(sand ~ ecosystem2, data = metadata)
+print(k.test)
+writeLines("There is a significant effect of habitat on percent sand. Now running Dunn test for pairwise comparisons:\n")
+d.test = dunnTest(sand ~ ecosystem2, data = metadata, method = "bh")
+print(d.test)
+writeLines("\n--------------------\n")
+dunn.res = rbind(dunn.res, d.test$res %>% mutate(property = "Sand"))
+
+sand.plot = ggplot(data=metadata, aes(x=ecosystem2, y=sand))+
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(aes(shape = ecosystem2), width = 0.2, alpha=0.3, size=2) +
+  scale_shape_manual(values = LandUse.shapes) +
+  labs(x="Land use", y="Sand (%)", title="Sand (%)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        axis.text = element_text(size=12),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none") +
+  annotate("text", label=c("*", "**"), x=c(2, 1.5), y=c(90, 86), size=4) +
+  annotate("segment", x=c(1,1,3, 1,1,2), xend=c(1,3,3, 1,2,2), 
+           y=c(89,90,90, 85,86,86), yend=c(90,90,89, 86,86,85), size=0.5)
+
+# Now plot all together
+soilchem.plot = cowplot::plot_grid(pH.plot, SOC.plot, CN.plot, sand.plot, ncol = 4, rel_widths = c(1,1,1,1))
+soilchem.plot
+
+#ggsave("soilchem.tiff", plot=soilchem.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=168, height=80, units="mm", dpi=600)
+
+```
+
+The only significant effects we saw are on moisture, C:N ratio, and percent organic matter. 
+
+* Moisture: forest was significantly different than meadow, where meadow soils were more moist than forest soils.
+* C:N rato: All habitats were significantly different than eachother. Forest > meadow > agriculture (forest soil had the most carbon per nitrogen and agriculture soil had the least carbon per nitrogen)
+* percent organic matter: Agriculture was significantly different than forest, where forest soil had more organic matter than agricultural soil
+
+### How soil properties on community composition
+
+I want to know how much of the variation in the community composition is explained by the soil properties For this analysis I will use a constrained ordination ordination approach using the `CAP` method of `phyloseq::ordinate`. I will use `vegan::ordistep` to select only significant soil properties variables. For the ordinations I will use the weighted UniFrac distance.
+
+
+```{r, message=FALSE, warning=FALSE, fig.height=6, fig.width=7}
+# Function for running the cap analyses
+cap_func = function(physeq, seed){
+  # Modify the metadata a bit to get easier to read variables and generate a C:N ratio variable
+  meta = data.frame(sample_data(physeq), stringsAsFactors = F) %>%
+    rename(Temp = in_situ_soil_temp,
+           SOM = organic_content_perc,
+           Sand = sand__perc) %>%
+    mutate(C.N = percent_C/percent_N,
+           location = gsub("_", " ", location))
+  rownames(meta) = meta$X.Sample
+  sample_data(physeq) = sample_data(meta)
+  
+  # Extract which habitat you are looking at
+  habitat = unique(as.character(meta$ecosystem))[1]
+  
+  writeLines(paste("Running", habitat, "\n"))
+  
+  # Get weighted unifrac distance matrix
+  wuf.dist = phyloseq::distance(physeq, "wunifrac")
+  
+  # Ordinate
+  set.seed(seed)
+  cap_ord.full <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, 
+                      formula = ~ pH + SOM + C.N + Sand)
+  set.seed(seed)
+  cap_ord.null <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, formula = ~ 1)
+
+  # Model selection to get just significant variables
+  set.seed(seed)
+  ordistep.res = ordistep(cap_ord.null, scope = formula(cap_ord.full), perm.max = 1000, trace=F)
+  goodform = ordistep.res$call$formula
+  set.seed(seed)
+  cap_ord <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, formula = goodform)
+  
+  # CAP plot
+  cap_plot <- plot_ordination(physeq = physeq, ordination = cap_ord, 
+                              color = "location", axes = c(1,2))
+  
+  # Now add the environmental variables as arrows
+  arrowmat <- vegan::scores(cap_ord, display = "bp")
+  
+  # Add labels, make a data.frame
+  arrowdf <- data.frame(labels = rownames(arrowmat), arrowmat) %>%
+    mutate(labels = gsub("\\.", ":", labels))
+  colnames(arrowdf) = c("labels", "xend", "yend")
+  
+  # Define the arrow aesthetic mapping
+  arrow_map <- aes(xend = xend, yend = yend, x = 0, y = 0, 
+                   color = NULL)
+  
+  label_map <- aes(x = 1.1 * xend, y = 1.1 * yend, 
+                   color = NULL, label = labels)
+  
+  arrowhead = arrow(length = unit(0.02, "npc"))
+  
+  # Make a new graphic
+  cap_plot = cap_plot + 
+    geom_segment(mapping = arrow_map, size = .5, data = arrowdf, color = "red", arrow = arrowhead) + 
+    geom_text_repel(mapping = label_map, size = 4, data = arrowdf, color = "red", show.legend = FALSE) +
+    ggtitle(habitat)
+  print(cap_plot)
+  
+  print(anova(cap_ord))
+  
+  writeLines(paste("\nTested environmental variabibles explain", round(100*RsquareAdj(cap_ord)$r.squared, 3), "% of the variation"))
+
+  writeLines("\n--------------------\n")
+  
+  return(cap_plot)
+}
+
+# Running the CAP analysis for each land use and across the region
+cap.plot.list = list()
+
+## Agriculture
+sub.physeq.norm = subset_samples(bulk.physeq.norm, ecosystem == "agriculture")
+ag.cap.plot = cap_func(sub.physeq.norm, 7272)
+
+## Meadow
+sub.physeq.norm = subset_samples(bulk.physeq.norm, ecosystem == "meadow")
+m.cap.plot = cap_func(sub.physeq.norm, 7272)
+
+## Forest
+sub.physeq.norm = subset_samples(bulk.physeq.norm, ecosystem == "forest")
+f.cap.plot = cap_func(sub.physeq.norm, 7272)
+
+
+```
+
+In all three habiats pH explains a significant portion of the variation in community composition. In meadow samples, C:N ratio and percent organic matter also significantly explain portions of the variance although much less so than pH. In Agriculture soils, C:N ratio also significantly explains a portion of the variance.
+
+This is not all that suprising as many previous studies have found that pH is a primary driver of microbial composition and that nutrient availability can also play an important role. 
+
+Now plot these together
+```{r, message=FALSE, warning=FALSE, fig.height=6, fig.width=6}
+
+cap.leg = g_legend(ag.cap.plot)
+ag.cap.plot.nl = ag.cap.plot + theme(legend.position="none")
+f.cap.plot.nl = f.cap.plot + theme(legend.position="none")
+m.cap.plot.nl = m.cap.plot + theme(legend.position="none")
+
+cowplot::plot_grid(ag.cap.plot.nl, m.cap.plot.nl, f.cap.plot.nl, cap.leg)
+
+```
+
+### Publication figure
+
+For publication make a plot of all the CAP analyses as well as the weighted UniFrac ordination of all sites.
+
+First make the ordination of all the samples.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+# Land use shapes
+LandUse.shapes = c("agriculture" = 15, "meadow" = 16, "forest" = 17)
+
+# Make ordination
+metadata = data.frame(sample_data(bulk.physeq))
+set.seed(72)
+wuf.ord = ordinate(bulk.physeq.norm, "PCoA", distance="unifrac", weighted=TRUE)
+Xaxis = paste("PCo1 (", round(wuf.ord$values[1,2]*100, digits=2), "%)", sep="")
+Yaxis = paste("PCo2 (", round(wuf.ord$values[2,2]*100, digits=2), "%)", sep="")
+
+wuf.ord.df = data.frame(wuf.ord$vectors) %>%
+  rownames_to_column(var="X.Sample") %>%
+  select(X.Sample, Axis.1, Axis.2)
+
+wuf.ord.df = full_join(wuf.ord.df, metadata, by="X.Sample")
+
+ord.plot = ggplot(data=wuf.ord.df, aes(x=Axis.1, y=Axis.2, shape=ecosystem)) +
+  geom_point(size=3) +
+  scale_shape_manual(values=LandUse.shapes) +
+  stat_ellipse(linetype=2, alpha=.5, size=0.5) +
+  labs(x=Xaxis, y=Yaxis, shape="Land use") +
+  theme_bw() +
+  theme(legend.background=NULL,
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        axis.text = element_text(size=12),
+        axis.title = element_text(size=14))
+
+ord.plot = ord.plot + theme(legend.position="none")
+
+```
+
+Now make the CAP analysis figures.
+
+```{r, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, echo=FALSE}
+cap_plot.list = c()
+i=1
+seed = 7272
+for (habitat in c("agriculture", "meadow", "forest")){
+  physeq = subset_samples(bulk.physeq.norm, ecosystem == habitat)
+
+  # Modify the metadata a bit to get easier to read variables and generate a C:N ratio variable
+  meta = data.frame(sample_data(physeq), stringsAsFactors = F) %>%
+     rename(Temp = in_situ_soil_temp,
+           SOM = organic_content_perc,
+           Sand = sand__perc) %>%
+    mutate(C.N = percent_C/percent_N,
+           location = gsub("_", " ", location)) %>%
+    mutate(habitat = habitat) %>%
+    select(X.Sample, location, ecosystem, pH, SOM, C.N, Sand)
+  rownames(meta) = meta$X.Sample
+  sample_data(physeq) = sample_data(meta)
+
+  writeLines(paste("Running", habitat, "\n"))
+  
+  # Get weighted unifrac distance matrix
+  wuf.dist = phyloseq::distance(physeq, "wunifrac")
+  
+  # Ordinate
+  set.seed(seed)
+  cap_ord.full <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, 
+                      formula = ~ pH + SOM + C.N + Sand)
+  set.seed(seed)
+  cap_ord.null <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, formula = ~ 1)
+
+  # Model selection to get just significant variables
+  set.seed(seed)
+  ordistep.res = ordistep(cap_ord.null, scope = formula(cap_ord.full), perm.max = 1000, trace=F)
+  goodform = ordistep.res$call$formula
+  set.seed(seed)
+  cap_ord <- ordinate(physeq = physeq, method = "CAP", distance = wuf.dist, formula = goodform)
+
+  # CAP plot
+  cap_plot <- plot_ordination(physeq = physeq, ordination = cap_ord, axes = c(1,2)) +
+    geom_point(aes(shape = ecosystem), size=3) + 
+    scale_shape_manual(values=LandUse.shapes)
+
+  # Now add the environmental variables as arrows
+  arrowmat <- vegan::scores(cap_ord, display = "bp")
+  
+  # Add labels, make a data.frame
+  arrowdf <- data.frame(labels = rownames(arrowmat), arrowmat) %>%
+    mutate(labels = gsub("\\.", ":", labels))
+  colnames(arrowdf) = c("labels", "xend", "yend")
+  
+  # Define the arrow aesthetic mapping
+  arrow_map <- aes(xend = xend, yend = yend, x = 0, y = 0, 
+                   color = NULL)
+  
+  label_map <- aes(x = 1.1 * xend, y = 1.1 * yend, 
+                   color = NULL, label = labels)
+  
+  arrowhead = arrow(length = unit(0.02, "npc"))
+  
+  # Make a new graphic
+  cap_plot = cap_plot + 
+    geom_segment(mapping = arrow_map, size = .5, data = arrowdf, 
+                 color = "black", arrow = arrowhead, size=0.5) + 
+    geom_text(mapping = label_map, size = 4, data = arrowdf, 
+              color = "black", show.legend = FALSE) +
+    theme_bw() +
+    theme(legend.position = "none",
+          axis.text = element_text(size=12),
+          axis.title = element_text(size=14))
+  xrange = layer_scales(cap_plot)$x$range$range
+  xrange.scale = sum(abs(xrange))*0.05
+  yrange = layer_scales(cap_plot)$y$range$range
+  yrange.scale = sum(abs(yrange))*0.05
+  cap_plot = cap_plot +
+    lims(x=c(xrange[1]-xrange.scale, xrange[2]+xrange.scale),
+         y=c(yrange[1]-yrange.scale, yrange[2]+yrange.scale))
+    
+  
+  cap_plot.list[[i]] = cap_plot
+  i = i+1
+}
+
+cap_plot.ag = cap_plot.list[[2]]
+cap_plot.m = cap_plot.list[[1]]
+cap_plot.f = cap_plot.list[[3]]
+
+```
+
+Now merge them together for the final figure.
+
+```{r, fig.height=6.61417, fig.width=6.61417, message=FALSE, warning=FALSE, echo=FALSE}
+ord.cap.plot = cowplot::plot_grid(ord.plot, cap_plot.m, cap_plot.ag, cap_plot.f, nrow=2, ncol=2, labels = c("A", "B", "C", "D"))
+ord.cap.plot
+
+#ggsave("ordinations.tiff", plot=ord.cap.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=168, height=168, units="mm", dpi=600)
+```
+
+## Session Info
+
+```{r}
+sessionInfo()
+```

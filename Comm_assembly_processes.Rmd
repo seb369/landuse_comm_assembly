@@ -1,0 +1,471 @@
+---
+title: "Relative influence of sochastic and deterministic processes on community turnover"
+author: "Samuel Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+    html_preview: false
+---
+
+
+## Introduction
+
+In the following analysis we will be using both βNTI and RCbray to examine the processes driving community assembly across land use regime and pH groups. βNTI values were calculated in bNTI_calculations.Rmd and RCbray values are calculated here
+
+This analysis values for significance testing as in Stegen et al. 2012 and Stegen et al. 2013. This means that the following conclusison can be drawn from this data:
+  βNTI > 2: Community assembly driven by variable selection
+  βNTI < -2: Community assembly driven by homgenizing selection
+  |βNTI| < 2 & RCbray > 0.95: Community assembly driven by dispersal limitation
+  |βNTI| < 2 & RCbray < -0.95: Community assembly driven by homogenizing dispersal
+  |βNTI| < 2 & |RCbray| < 0.95: Community assembly is due to drift alone (or weak selection)
+  
+Please note that some of these cell have eval=FALSE in the rmarkdown version so that they wont run when knitted. This was done because they take a really long time and are better run in terminal.
+
+### Initiate libraries
+```{r, message=FALSE, warning=FALSE}
+# Packages needed for analysis
+library(dplyr)
+library(tibble)
+library(phyloseq)
+library(ape)
+library(vegan)
+library(parallel)
+
+# Packages needed for plotting
+library(ggplot2)
+
+```
+
+### Import data
+
+```{r, message=FALSE, warning=FALSE}
+# Import bulk soil phyloseq data
+bulk.physeq = readRDS("/home/sam/data/fullCyc2_data/bulk_soil_physeq.RDS")
+
+## Check how many reads you have in each of the samples. This will tell you if you need to re-do anything
+# Get read counts and make a new dataframe with this data
+read_count = data.frame("count" = colSums(otu_table(bulk.physeq))) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(-count) %>%
+  mutate(X.Sample=factor(X.Sample, levels=X.Sample))
+
+# Now plot read count for each sample. The horizontal line represents a 2000 read threshold
+ggplot(data=read_count, aes(x=X.Sample, y=log10(count), fill=ecosystem)) +
+  geom_bar(stat="identity") +
+  labs(x="Sample", y="Log10(Read count)") +
+  geom_hline(yintercept=log10(10000)) +
+  theme(text = element_text(size=16),
+        axis.text.x = element_blank())
+# Everything seems to be at or above 10000 total reads
+
+bulk.physeq
+```
+
+Now we need to rarefy the data to normalize the sequencing depth. We should also get a normalized dataset which gives relative abundance rather than readcounts.
+
+```{r, message=FALSE, warning=FALSE}
+# Rarefy to an even depth
+set.seed(72)  # setting seed for reproducibility
+bulk.physeq.rare = rarefy_even_depth(bulk.physeq)
+
+# Normalize read counts (this gives relative abundance)
+bulk.physeq.norm = transform_sample_counts(bulk.physeq.rare, function(x) x/sum(x))
+
+```
+
+Now import the βNTI data generated in bNTI_calculation.Rmd
+
+```{r, message=FALSE, warning=FALSE}
+# Import data
+full.bNTI.df = read.table("/home/sam/data/fullCyc2_data/Final_data/community_assembly/full_bNTI.txt")
+```
+
+## Calculating RCbray
+
+First we need a function to calculate RCbray.
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Function for calculating the distances in the null communities
+RCbray_null_func <- function(i, freq.abd.df, alpha1, alpha2, N){
+  # Get simulated communities and distance
+  ## initally select OTUs weighted by their frequency. The number of OTUs selected should equal the richness of the samples.
+  simcom1 = data.frame(table(sample(freq.abd.df$OTU, size=alpha1, replace=F, prob=freq.abd.df$freq)), stringsAsFactors = F)
+  colnames(simcom1) = c("OTU","simcom1")
+  simcom1$OTU = as.character(simcom1$OTU)
+  simcom1 = inner_join(simcom1, freq.abd.df, by="OTU")
+  simcom2 = data.frame(table(sample(freq.abd.df$OTU, size=alpha2, replace=F, prob=freq.abd.df$freq)), stringsAsFactors = F)
+  colnames(simcom2) = c("OTU","simcom2")
+  simcom2$OTU = as.character(simcom2$OTU)
+  simcom2 = inner_join(simcom2, freq.abd.df, by="OTU")
+
+  ## Now recruit OTUs based on their abundance in the metacommunity
+  simcom1.abd = data.frame(table(sample(simcom1$OTU, size=N-alpha1, replace=T, prob=simcom1$p)), stringsAsFactors = F)
+  colnames(simcom1.abd) = c("OTU","simcom1.abd")
+  simcom1.abd$OTU = as.character(simcom1.abd$OTU)
+  simcom1 = full_join(simcom1, simcom1.abd, by="OTU") %>%
+    mutate(simcom1.abd = ifelse(is.na(simcom1.abd), 1, simcom1.abd)) %>%
+    select(OTU, simcom1.abd)
+  
+  simcom2.abd = data.frame(table(sample(simcom2$OTU, size=N-alpha2, replace=T, prob=simcom2$p)), stringsAsFactors = F)
+  colnames(simcom2.abd) = c("OTU","simcom2.abd")
+  simcom2.abd$OTU = as.character(simcom2.abd$OTU)
+  simcom2 = full_join(simcom2, simcom2.abd, by="OTU") %>%
+    mutate(simcom2.abd = ifelse(is.na(simcom2.abd), 1, simcom2.abd)) %>%
+    select(OTU, simcom2.abd)
+
+  
+  simcom = full_join(simcom1, simcom2, by="OTU")
+  simcom[is.na(simcom)] = 0
+  rownames(simcom) = simcom$OTU
+  simcom$OTU = NULL
+  
+  null.dist = vegdist(t(simcom), method="bray")[1]
+  return(null.dist)
+}
+
+# Main function for calculating RCbray
+Calc_RCbray <- function(physeq, reps, nproc){
+  # Get OTU table from phyloseq object
+  otu.table = otu_table(physeq)
+  
+  # Get alpha diversity for each sample
+  otu.PA.table = otu.table
+  otu.PA.table[otu.PA.table > 0] = 1
+  alpha.df = data.frame(Sample_ID = colnames(otu.PA.table), OTU.n = colSums(otu.PA.table), stringsAsFactors = F)
+  
+  # Get beta diversity matrix
+  beta.table = as.matrix(vegdist(t(otu.PA.table), method="bray", diag=TRUE, upper=TRUE))
+  
+  ## Get metacommunity
+  # Calculate the number of individuals in the meta community (Average read depth)
+  N <- mean(apply(t(otu.table), 1, sum))
+  
+  # Calculate the average relative abundance of each taxa across communities
+  p.m <- apply(t(otu.table), 2, mean)
+  p.m <- p.m[p.m != 0]
+  p <- p.m/N
+  
+  # Calculate the occurrence frequency of each taxa across communities
+  otu.table.bi <- 1*(t(otu.table)>0)
+  freq <- apply(otu.table.bi, 2, mean)
+  freq <- freq[freq != 0]
+  
+  # Combine
+  freq.abd.df = data.frame(p=p, freq=freq) %>%
+    tibble::rownames_to_column(var="OTU") %>%
+    filter(p != 0, freq != 0) %>%
+    arrange(p)
+  
+  # For each pair of samples run the RCbray analysis
+  comps = combn(alpha.df$Sample_ID, m=2, simplify = F)
+  RCb.df = data.frame(Site1 = character(), Site2 = character(), RCb = numeric(), stringsAsFactors = F)
+  for (j in seq(1, length(comps))){
+    sam = comps[[j]]
+    alpha1 = alpha.df[alpha.df$Sample_ID == sam[1],]$OTU.n
+    alpha2 = alpha.df[alpha.df$Sample_ID == sam[2],]$OTU.n
+    # Permute "reps" many times
+    rep.list = seq(1, reps)
+    null.list = mclapply(rep.list, RCbray_null_func, freq.abd.df=freq.abd.df, alpha1=alpha1, alpha2=alpha2, N=N, mc.cores=nproc)
+    
+    RCb = (length(null.list[null.list > beta.table[sam[1], sam[2]]]) + (0.5*length(null.list[null.list == beta.table[sam[1], sam[2]]])))/reps
+    RCb = (RCb - 0.5)*2
+    
+    RCb.df = rbind(RCb.df, data.frame(Site1=sam[1], Site2=sam[2], RCb=RCb, stringsAsFactors = F))
+  }
+  
+  RCb.df
+  return(RCb.df)
+}
+
+```
+
+Now calculate the RCbray for 999 bootstrap replicates for each site pair. This should only be run once (eval=FALSE).
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Run the RCbray function
+RCb.df = Calc_RCbray(bulk.physeq.rare, 999, 20)
+write.table(RCb.df, file="/home/sam/fullCyc2_data/Final_data/community_assembly/full.RCb.df.txt", quote = F, sep = "\t")
+
+writeLines("\n\n\n\n\nDone!!!\n\n\n\n\n")
+
+```
+
+## Merging βNTI and RCbray data
+
+Now I'll import both the βNTI data and the newly generated RCbray data. Then add in land use categories.
+
+```{r, message=FALSE, warning=FALSE}
+
+# bNTI data
+# Import bNTI data
+bNTI.df = read.table("/home/sam/data/fullCyc2_data/Final_data/community_assembly/full_bNTI.txt")
+
+# RCbray data
+RCb.df = read.table(file="/home/sam/data/fullCyc2_data/Final_data/community_assembly/full.RCb.df.txt") %>%
+  mutate(Sample_1 = Site2, Sample_2 = Site1)
+
+# Get habitat metadata and add it to the βNTI then merge with the RCbray dataset
+eco.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_1 = X.Sample, ecosystem_1 = ecosystem)
+eco.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_2 = X.Sample, ecosystem_2 = ecosystem)
+
+bNTI.df = inner_join(bNTI.df, eco.meta1) %>%
+  inner_join(eco.meta2)
+  
+
+# Merge both datasets
+turnover.df = inner_join(bNTI.df, RCb.df)
+head(turnover.df)
+
+```
+
+## Community assembly processes across land use regime
+
+Now lets combine the RCbray results with the results from the bNTI analysis. This will tell us the relative influcence of both deterministic (bNTI) and stochastic (RCbray) processes on community turnover in each land use regime.
+
+```{r, fig.height=3.14961, fig.width=6.61417, message=FALSE, warning=FALSE, echo=FALSE}
+# Make bNTI figure
+within.bNTI.df = bNTI.df %>%
+  filter(ecosystem_1 == ecosystem_2) %>%
+  mutate(ecosystem = ecosystem_1)
+
+ecosystem.conv = data.frame(ecosystem = c("agriculture", "meadow", "forest"), ecosystem2 = c("Cropland", "Old-field", "Forest"))
+within.bNTI.df = left_join(within.bNTI.df, ecosystem.conv)
+within.bNTI.df$ecosystem2 = factor(within.bNTI.df$ecosystem2, levels = c("Cropland", "Old-field", "Forest"))
+
+within.bNTI.df$ecosystem = factor(within.bNTI.df$ecosystem, levels=c("agriculture", "meadow", "forest"))
+
+
+eco.bNTI.plot = ggplot(within.bNTI.df, aes(x=ecosystem2, y=bNTI)) +
+  geom_boxplot(outlier.shape=1) +
+  geom_hline(yintercept = 2, linetype=2, size=0.5) +
+  geom_hline(yintercept = -2, linetype=2, size=0.5) +
+  labs(x="Land use", y="βNTI") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text = element_text(size=12),
+        axis.text.x = element_text(angle=45, hjust=1),
+        axis.title = element_text(size=14))
+
+# Make the community analysis plot
+eco.turnover.df = turnover.df %>%
+  filter(ecosystem_1 == ecosystem_2) %>%
+  mutate(ecosystem = ecosystem_1)
+
+eco.turnover.df = left_join(eco.turnover.df, ecosystem.conv)
+eco.turnover.df$ecosystem2 = factor(eco.turnover.df$ecosystem2, levels = c("Cropland", "Old-field", "Forest"))
+
+eco.turnover.df$ecosystem = factor(eco.turnover.df$ecosystem, levels=c("agriculture", "meadow", "forest"))
+
+## Calculate the relative influence of each process
+eco.turnover.df = eco.turnover.df %>%
+  mutate(process = ifelse(abs(bNTI) < 2,
+                          ifelse(abs(RCb) < 0.95, "Drift",
+                                 ifelse(RCb >= 0.95, "Dispersal Limited",
+                                        ifelse(RCb <= -0.95, "Homogenizing Dispersal", "ERROR"))),
+                          ifelse(bNTI >= 2, "Variable Selection",
+                                 ifelse(bNTI <= -2, "Homogeneous Selection", "ERROR"))))
+eco.turnover.df$process = factor(eco.turnover.df$process, levels = c("Drift", 
+                                                             "Dispersal Limited", "Homogenizing Dispersal", 
+                                                             "Variable Selection", "Homogeneous Selection"))
+
+sum.eco.turnover.df = eco.turnover.df %>%
+  group_by(ecosystem2, process) %>%
+  dplyr::summarize(n_sites = n(),
+                   perc=(n()/45)*100) %>%
+  as.data.frame
+
+sum.eco.turnover.df
+
+## Fix the look of some of the variable names for the figure. This is purely asthetic
+sum.eco.turnover.mod.df = sum.eco.turnover.df %>%
+  mutate(process = gsub(" S", "\ns", process)) %>%
+  mutate(process = gsub(" D", "\nd", process)) %>%
+  mutate(process = gsub("Drift", "Drift alone\n ", process))
+sum.eco.turnover.mod.df$process = factor(sum.eco.turnover.mod.df$process, 
+                                        levels = c("Drift alone\n ",
+                                                   "Homogenizing\ndispersal", 
+                                                   "Variable\nselection", 
+                                                   "Homogeneous\nselection"))
+
+eco.turnover.plot = ggplot(sum.eco.turnover.mod.df, aes(x=ecosystem2, y=perc, fill=process)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = c("white", "grey75", "grey50", "black")) + 
+  labs(x="Land use", y="Percent of site pairs", fill="Process") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_text(size=12),
+        axis.text.x = element_text(angle=45, hjust=1),
+        axis.title = element_text(size=14),
+        legend.key.size = unit(10, "mm"),
+        legend.text = element_text(size=12),
+        legend.title = element_text(size=14))
+
+# Merge the plots
+eco.plot = cowplot::plot_grid(eco.bNTI.plot, eco.turnover.plot, 
+                   rel_widths=c(0.6, 1), labels=c("A", "B"))
+eco.plot
+
+#ggsave("alt_land_use_assembly_processes.tiff", plot=eco.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=168, height=80, units="mm", dpi=600)
+
+```
+
+## Community assembly processes across pH group
+
+Now lets look at the relative influcence of both deterministic (bNTI) and stochastic (RCbray) processes on community turnover in each pH group. Again acidic soils have a pH ≤ 5.5 and pH neutral soils have 5.5 < pH < 8.5. As we found in bNTI_across_pH_groups.Rmd there is an interaction between pH group and land use regime so we want to add that to the figure too.
+
+```{r, fig.height=3.14961, fig.width=6.61417, message=FALSE, warning=FALSE, echo=FALSE}
+# Get pH metadata for each site
+pH.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  mutate(pH_group_1 = ifelse(pH <= 5.5, "Acidic", "Neutral")) %>%
+  rename(Sample_1 = X.Sample, pH_1 = pH)
+pH.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  mutate(pH_group_2 = ifelse(pH <= 5.5, "Acidic", "Neutral")) %>%
+  rename(Sample_2 = X.Sample, pH_2 = pH)
+
+# Make bNTI figure
+pH.bNTI.df = inner_join(bNTI.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  filter(pH_group_1 == pH_group_2) %>%
+  mutate(pH_group = pH_group_1)
+
+pH.bNTI.df$pH_group = factor(pH.bNTI.df$pH_group, levels=c("Acidic", "Neutral"))
+
+pH.bNTI.m.df = pH.bNTI.df %>%
+  mutate(ecosystem = ifelse(ecosystem_1 == ecosystem_2, as.character(ecosystem_1), "across"))
+
+pH.bNTI.plot = ggplot(pH.bNTI.m.df, aes(x=pH_group, y=bNTI)) +
+  geom_boxplot(outlier.shape=1) +
+  geom_hline(yintercept = 2, linetype=2, size=0.5) +
+  geom_hline(yintercept = -2, linetype=2, size=0.5) +
+  labs(x="pH group", y="βNTI") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text = element_text(size=12),
+        axis.title = element_text(size=14))
+
+# Make the community analysis plot
+pH.turnover.df = inner_join(turnover.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  filter(pH_group_1 == pH_group_2) %>%
+  mutate(pH_group = pH_group_1)
+
+## Calculate relative influence of each process
+pH.turnover.df = pH.turnover.df %>%
+  mutate(process = ifelse(abs(bNTI) < 2,
+                          ifelse(abs(RCb) < 0.95, "Drift",
+                                 ifelse(RCb >= 0.95, "Dispersal Limited",
+                                        ifelse(RCb <= -0.95, "Homogenizing Dispersal", "ERROR"))),
+                          ifelse(bNTI >= 2, "Variable Selection",
+                                 ifelse(bNTI <= -2, "Homogeneous Selection", "ERROR"))))
+pH.turnover.df$process = factor(pH.turnover.df$process, levels = c("Drift", 
+                                                                   "Dispersal Limited", "Homogenizing Dispersal", 
+                                                                   "Variable Selection", "Homogeneous Selection"))
+sum.pH.turnover.df = pH.turnover.df %>%
+  group_by(pH_group, process) %>%
+  dplyr::summarize(n_sites = n(),
+                   perc=(n()/105)*100) %>%
+  as.data.frame
+
+sum.pH.turnover.df
+
+## Fix the look of some of the variable names for the figure. This is purely asthetic
+sum.pH.turnover.mod.df = sum.pH.turnover.df %>%
+  mutate(process = gsub(" S", "\ns", process)) %>%
+  mutate(process = gsub(" D", "\nd", process)) %>%
+  mutate(process = gsub("Drift", "Drift alone\n ", process))
+sum.pH.turnover.mod.df$process = factor(sum.pH.turnover.mod.df$process, 
+                                        levels = c("Drift alone\n ",
+                                                   "Homogenizing\ndispersal", 
+                                                   "Variable\nselection", 
+                                                   "Homogeneous\nselection"))
+
+pH.turnover.plot = ggplot(sum.pH.turnover.mod.df, aes(x=pH_group, y=perc, fill=process)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = c("white", "grey75", "grey50", "black")) + 
+  labs(x="pH group", y="Percent of site pairs", fill="Process") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_text(size=12),
+        axis.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        legend.title = element_text(size=14),
+        legend.key.size = unit(10, "mm"))
+
+
+pH.plot = cowplot::plot_grid(pH.bNTI.plot, pH.turnover.plot, 
+                   rel_widths=c(0.6, 1), labels=c("A", "B"))
+pH.plot
+
+```
+
+Now add in the plot also generated in bNTI_across_pH_groups.Rmd showing the interaction between pH group and land use on bNTI.
+
+```{r, fig.height=6.61417, fig.width=6.61417, message=FALSE, warning=FALSE, echo=FALSE}
+
+# get habitat metadata and add it to the βNTI data
+eco.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem, location) %>%
+  rename(Sample_1 = X.Sample, ecosystem_1 = ecosystem, location_1 = location)
+eco.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem, location) %>%
+  rename(Sample_2 = X.Sample, ecosystem_2 = ecosystem, location_2 = location)
+
+eco.pH.bNTI.df = inner_join(pH.bNTI.df, eco.meta1) %>%
+  inner_join(eco.meta2) %>%
+  mutate(LandUse_1 = ifelse(ecosystem_1 == "agriculture" | ecosystem_2 == "agriculture", "Cropland",
+                            ifelse(ecosystem_1 == "meadow" | ecosystem_2 == "meadow", "Old-field", "Forest"))) %>%
+  mutate(LandUse_2 = ifelse(ecosystem_1 == ecosystem_2, LandUse_1,
+                            ifelse(LandUse_1 == "Cropland",
+                                   ifelse(ecosystem_1 == "meadow" | ecosystem_2 == "meadow", "Old-field", "Forest"),
+                                   "Forest"))) %>%
+  mutate(LandUse_cross = paste(LandUse_1, LandUse_2, sep=" vs. "),
+         Location_diff = ifelse(location_1 == location_2, "Same location", "Different location"),
+         LandUse_diff = ifelse(LandUse_1 == LandUse_2, "Same land use", "Different land use")) %>%
+  arrange(ecosystem_1, ecosystem_2)
+eco.pH.bNTI.df$LandUse_cross = factor(eco.pH.bNTI.df$LandUse_cross, levels = c("Cropland vs. Cropland", "Old-field vs. Old-field", "Forest vs. Forest",
+                                                                               "Cropland vs. Old-field", "Cropland vs. Forest", "Old-field vs. Forest"))
+
+# Plot the βNTI data for each pH_group
+eco.pH.bNTI.plot = ggplot(eco.pH.bNTI.df, aes(x=LandUse_cross, y=bNTI)) +
+  geom_boxplot(aes(fill=LandUse_diff), outlier.shape=1) +
+  #geom_jitter(aes(shape=Location_diff)) +
+  scale_fill_manual(values=c("lightgrey", "white")) +
+  scale_shape_manual(values=c(1, 16)) +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  labs(x="Land use of site pairs", y="βNTI", fill="Site pair category", shape="Site locations") +
+  facet_grid(~pH_group) +
+  theme_bw() +
+  theme(axis.text = element_text(size=12),
+        axis.text.x = element_text(angle=45, hjust=1),
+        axis.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        legend.title = element_text(size=14),
+        strip.text.x = element_text(size=14),
+        legend.position="none",
+        plot.margin = unit(c(5,1,1,10), "mm"))
+
+inter.pH.plot = cowplot::plot_grid(pH.plot, eco.pH.bNTI.plot, labels=c("", "C"), nrow=2)
+inter.pH.plot
+
+#ggsave("pH_assembly_processes_wInter.tiff", plot=alt.inter.pH.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=168, height=168, units="mm", dpi=600)
+```
+
+## Session Info
+
+```{r}
+sessionInfo()
+```

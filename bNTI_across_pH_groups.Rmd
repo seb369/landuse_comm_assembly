@@ -1,0 +1,221 @@
+---
+title: "Examining βNTI across pH groups"
+author: "Samuel Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+    html_preview: false
+---
+
+
+## Introduction
+
+In the following analysis, βNTI will be examined within pH groups (acidic and neutral soils) to see if community assembly (deterministic vs. stochastic) differs across soil pH group. βNTI values were calculated in bNTI_calculations.Rmd.
+
+This analysis uses the same (-2, 2) range for significance testing as in Stegen et al. 2012. This means that the following conclusison can be drawn from this data:
+  βNTI > 2: Community assembly driven by variable selection
+  βNTI < -2: Community assembly driven by homgenizing selection
+  |βNTI| < 2: Community assembly is stochastic
+
+### Initiate libraries
+```{r, message=FALSE, warning=FALSE}
+# Packages needed for analysis
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(phyloseq)
+library(geosphere)
+
+# Packages needed for plotting
+library(ggplot2)
+library(grid)
+library(gridExtra)
+```
+
+### Import data
+
+```{r, message=FALSE, warning=FALSE}
+# Import bulk soil phyloseq data
+bulk.physeq = readRDS("/home/sam/data/fullCyc2_data/bulk_soil_physeq.RDS")
+
+## Check how many reads you have in each of the samples. This will tell you if you need to re-do anything
+# Get read counts and make a new dataframe with this data
+read_count = data.frame("count" = colSums(otu_table(bulk.physeq))) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(-count) %>%
+  mutate(X.Sample=factor(X.Sample, levels=X.Sample))
+
+# Now plot read count for each sample. The horizontal line represents a 2000 read threshold
+ggplot(data=read_count, aes(x=X.Sample, y=log10(count), fill=ecosystem)) +
+  geom_bar(stat="identity") +
+  labs(x="Sample", y="Log10(Read count)") +
+  geom_hline(yintercept=log10(10000)) +
+  theme(text = element_text(size=16),
+        axis.text.x = element_blank())
+# Everything seems to be at or above 10000 total reads
+
+bulk.physeq
+```
+
+Now we need to rarefy the data to normalize the sequencing depth. We should also get a normalized dataset which gives relative abundance rather than readcounts.
+
+```{r, message=FALSE, warning=FALSE}
+# Rarefy to an even depth
+set.seed(72)  # setting seed for reproducibility
+bulk.physeq.rare = rarefy_even_depth(bulk.physeq)
+
+# Normalize read counts (this gives relative abundance)
+bulk.physeq.norm = transform_sample_counts(bulk.physeq.rare, function(x) x/sum(x))
+
+```
+
+Now import the βNTI data generated in bNTI_calculation.Rmd
+```{r, message=FALSE, warning=FALSE}
+# Import data
+full.bNTI.df = read.table("/home/sam/data/fullCyc2_data/Final_data/community_assembly/full_bNTI.txt")
+```
+
+## βNTI between pH groups
+
+For the analysis of the neutral models we grouped samples based on their pH. These two groups consisted of:
+  Acidic soils: pH ≤ 5.5
+  pH neutral soils: 5.5 < pH < 8.5
+  Alkaline soils: pH ≥ 8.5
+
+First, how do the land use regimes split up into these groups. We dont want one pH group to contain too many of a single land use.
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=3}
+
+pH.meta.sum = data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem, pH) %>%
+  mutate(pH_group = ifelse(pH <= 5.5, "Acidic", 
+                           ifelse(pH >= 8.5, "Alkaline", "Neutral"))) %>%
+  group_by(ecosystem, pH_group) %>%
+  summarize(site_n = n()) %>%
+  as.data.frame
+
+pH.meta.sum$ecosystem = factor(pH.meta.sum$ecosystem, levels = c("agriculture", "meadow", "forest"))
+pH.meta.sum$pH_group = factor(pH.meta.sum$pH_group, levels = c("Acidic", "Neutral", "Alkaline"))
+pH.meta.sum
+
+ggplot(data=pH.meta.sum, aes(x=ecosystem, y=site_n, fill=pH_group)) +
+  geom_bar(stat="identity")
+
+```
+  
+### Comparing βNTI between pH groups
+
+Do these two pH groups differ in their phylogenetic turnover?
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=3}
+# Assign pH groups
+# get pH metadata and add it to the βNTI data
+pH.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_1 = X.Sample, pH_1 = pH) %>%
+  mutate(pH_group_1 = ifelse(pH_1 <= 5.5, "Acidic", "Neutral"))
+pH.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_2 = X.Sample, pH_2 = pH) %>%
+  mutate(pH_group_2 = ifelse(pH_2 <= 5.5, "Acidic", "Neutral"))
+
+pH.bNTI.df = inner_join(full.bNTI.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  filter(pH_group_1 == pH_group_2) %>%
+  mutate(pH_group = pH_group_1) %>%
+  mutate(contrast = paste(Sample_1, Sample_2, sep="-VS-"))
+
+pH.bNTI.df$pH_group = factor(pH.bNTI.df$pH_group, levels=c("Acidic", "Neutral"))
+
+pH.bNTI.df %>% group_by(pH_group) %>%
+  dplyr::summarize(mean_bNTI = mean(bNTI),
+            median_bNTI = median(bNTI)) %>%
+  as.data.frame
+
+# Plot the βNTI data for each pH_group
+pH.bNTI.plot = ggplot(pH.bNTI.df, aes(x=pH_group, y=bNTI)) +
+  geom_boxplot() +
+  geom_jitter() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  labs(x="pH group", y="βNTI") +
+  theme(legend.position = "none")
+
+pH.bNTI.plot
+
+# How many site pairs are outside the -2,2 interval for each habitat?
+pH.bNTI.df %>%
+  mutate(selection = ifelse(bNTI < -2, "Homogeneous",
+                            ifelse(bNTI > 2, "Variable", "Stocastic"))) %>%
+  group_by(pH_group, selection) %>%
+  dplyr::summarize(n_pairs = n()) %>%
+  mutate(percent = n_pairs/105) %>%
+  as.data.frame
+
+# Are the average βNTI values different among habitats?
+kruskal.test(bNTI ~ pH_group, data = pH.bNTI.df) 
+
+
+```
+
+Interestingly we see that acidic soils tend to be more stochastic than pH neutral soils. In fact, the βNTI values are significantly different from eachother. However, neither group has a median βNTI outside of the (-2,2) significance threshold. While on the whole, acidic soils tend to be more stochastic, there is a much higher involvement of variable selection in them as compared to pH neutral soils.
+
+### Comparing βNTI between pH groups and land use regimes
+
+Lets see if there is any interaction between land use regime and the pH group on βNTI
+
+```{r, message=FALSE, warning=FALSE, fig.height=6, fig.width=10}
+# get habitat metadata and add it to the βNTI data
+eco.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem, location) %>%
+  rename(Sample_1 = X.Sample, ecosystem_1 = ecosystem, location_1 = location)
+eco.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem, location) %>%
+  rename(Sample_2 = X.Sample, ecosystem_2 = ecosystem, location_2 = location)
+
+eco.pH.bNTI.df = inner_join(pH.bNTI.df, eco.meta1) %>%
+  inner_join(eco.meta2) %>%
+  mutate(LandUse_1 = ifelse(ecosystem_1 == "agriculture" | ecosystem_2 == "agriculture", "Cropland",
+                            ifelse(ecosystem_1 == "meadow" | ecosystem_2 == "meadow", "Old field", "Forest"))) %>%
+  mutate(LandUse_2 = ifelse(ecosystem_1 == ecosystem_2, LandUse_1,
+                            ifelse(LandUse_1 == "Cropland",
+                                   ifelse(ecosystem_1 == "meadow" | ecosystem_2 == "meadow", "Old field", "Forest"),
+                                   "Forest"))) %>%
+  mutate(LandUse_cross = paste(LandUse_1, LandUse_2, sep=" vs. "),
+         Location_diff = ifelse(location_1 == location_2, "Same location", "Different location"),
+         LandUse_diff = ifelse(LandUse_1 == LandUse_2, "Same land use", "Different land use")) %>%
+  arrange(ecosystem_1, ecosystem_2)
+eco.pH.bNTI.df$LandUse_cross = factor(eco.pH.bNTI.df$LandUse_cross, levels = c("Cropland vs. Cropland", "Old field vs. Old field", "Forest vs. Forest",
+                                                                               "Cropland vs. Old field", "Cropland vs. Forest", "Old field vs. Forest"))
+
+# Plot the βNTI data for each pH_group
+eco.pH.bNTI.plot = ggplot(eco.pH.bNTI.df, aes(x=LandUse_cross, y=bNTI)) +
+  geom_boxplot(aes(fill=LandUse_diff), outlier.shape=13) +
+  geom_jitter(aes(shape=Location_diff)) +
+  scale_fill_manual(values=c("lightgrey", "white")) +
+  scale_shape_manual(values=c(1, 16)) +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  labs(x="pH group", y="βNTI", fill="Site pair category", shape="Site locations") +
+  facet_grid(~pH_group) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+
+eco.pH.bNTI.plot
+
+
+
+```
+
+So we are seeing some interaction between land use and pH group, particularly in acidic soils where samples from different land uses seem to be more stochastic, while all the rest are primarily homogenous selection.
+
+## Session info
+
+```{r}
+sessionInfo()
+```
+
+
+

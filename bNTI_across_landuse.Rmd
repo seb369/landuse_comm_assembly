@@ -1,0 +1,532 @@
+---
+title: "Examining βNTI across land use regimes"
+author: "Samuel Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+    html_preview: false
+---
+
+
+## Introduction
+
+In the following analysis, βNTI will be examined within land use strategies to see if community assembly (deterministic vs. stochastic) differs across land use. The βNTI will also be compared against variation in soil parameters within each land use to see if phylogenetic turnover correlates with these soil factors. βNTI values were calculated in bNTI_calculations.Rmd.
+
+This analysis uses the same (-2, 2) range for significance testing as in Stegen et al. 2012. This means that the following conclusison can be drawn from this data:
+  βNTI > 2: Community assembly driven by variable selection
+  βNTI < -2: Community assembly driven by homgenizing selection
+  |βNTI| < 2: Community assembly is stochastic
+
+
+### Initiate libraries
+```{r, message=FALSE, warning=FALSE}
+# Packages needed for analysis
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(phyloseq)
+library(geosphere)
+
+# Packages needed for plotting
+library(ggplot2)
+library(grid)
+library(gridExtra)
+```
+
+### Import data
+
+```{r, message=FALSE, warning=FALSE}
+# Import bulk soil phyloseq data
+bulk.physeq = readRDS("/home/sam/data/fullCyc2_data/bulk_soil_physeq.RDS")
+
+## Check how many reads you have in each of the samples. This will tell you if you need to re-do anything
+# Get read counts and make a new dataframe with this data
+read_count = data.frame("count" = colSums(otu_table(bulk.physeq))) %>%
+  rownames_to_column(var="X.Sample") %>%
+  inner_join(data.frame(sample_data(bulk.physeq)), by="X.Sample") %>%
+  arrange(-count) %>%
+  mutate(X.Sample=factor(X.Sample, levels=X.Sample))
+
+# Now plot read count for each sample. The horizontal line represents a 2000 read threshold
+ggplot(data=read_count, aes(x=X.Sample, y=log10(count), fill=ecosystem)) +
+  geom_bar(stat="identity") +
+  labs(x="Sample", y="Log10(Read count)") +
+  geom_hline(yintercept=log10(10000)) +
+  theme(text = element_text(size=16),
+        axis.text.x = element_blank())
+# Everything seems to be at or above 10000 total reads
+
+bulk.physeq
+```
+
+Now we need to rarefy the data to normalize the sequencing depth. We should also get a normalized dataset which gives relative abundance rather than readcounts.
+
+```{r, message=FALSE, warning=FALSE}
+# Rarefy to an even depth
+set.seed(72)  # setting seed for reproducibility
+bulk.physeq.rare = rarefy_even_depth(bulk.physeq)
+
+# Normalize read counts (this gives relative abundance)
+bulk.physeq.norm = transform_sample_counts(bulk.physeq.rare, function(x) x/sum(x))
+
+```
+
+Now import the βNTI data generated in bNTI_calculation.Rmd
+```{r, message=FALSE, warning=FALSE}
+# Import data
+full.bNTI.df = read.table("/home/sam/data/fullCyc2_data/Final_data/community_assembly/full_bNTI.txt")
+```
+
+## βNTI across habitats
+
+### Comparing βNTI between habitats
+
+Now that we have calculated βNTI for pairwise sites within habitats, lets see if there is any differences between land use regimes.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=8}
+
+# get habitat metadata and add it to the βNTI data
+eco.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_1 = X.Sample, ecosystem_1 = ecosystem)
+eco.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_2 = X.Sample, ecosystem_2 = ecosystem)
+
+bNTI.df = inner_join(full.bNTI.df, eco.meta1) %>%
+  inner_join(eco.meta2) %>%
+  filter(ecosystem_1 == ecosystem_2) %>%
+  mutate(ecosystem = ecosystem_1)
+
+bNTI.df$ecosystem = factor(bNTI.df$ecosystem, levels=c("agriculture", "meadow", "forest"))
+
+bNTI.df %>% group_by(ecosystem) %>%
+  dplyr::summarize(mean_bNTI = mean(bNTI),
+            median_bNTI = median(bNTI))
+
+# Plot the βNTI values each ecosystem.
+bNTI.plot = ggplot(bNTI.df, aes(x=ecosystem, y=bNTI)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  labs(x="Land use", y="βNTI") +
+  theme(legend.position = "none")
+
+# How many site pairs are outside the -2,2 interval for each habitat?
+select.bNTI.df = bNTI.df %>%
+  mutate(selection = ifelse(bNTI < -2, "Homogeneous Selection",
+                            ifelse(bNTI > 2, "Variable Selection", "Stochastic"))) %>%
+  group_by(ecosystem, selection) %>%
+  dplyr::summarize(n_pairs = n()) %>%
+  mutate(perc = n_pairs/45)
+select.bNTI.df$selection = factor(select.bNTI.df$selection, levels=c("Stochastic", "Variable Selection", "Homogeneous Selection"))
+select.bNTI.df
+
+selection.plot = ggplot(select.bNTI.df, aes(x=ecosystem, y=perc, fill=selection)) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("grey", "#01BC2F", "#5E9AFF")) + 
+  labs(x="Land use", y="Percent of site pairs", fill="Assembly process")
+selection.plot
+
+# Are the average βNTI values different among habitats?
+kruskal.test(bNTI ~ ecosystem, data = bNTI.df) 
+
+cowplot::plot_grid(bNTI.plot, selection.plot, rel_widths=c(.7, 1))
+
+```
+
+Here we see that the median βNTI value for agriculture and meadow soils are below -2 indicating that phylogenetic turnover in land use strategies is significantly lower than expected by chance. This indicates that these habitats are goverened primarily by homogeneous selection processes. Forest on the other hand is above that value indicating that it is more neutral. However, forest soils have a much broader range of βNTI values
+
+### βNTI across soil properties within each habitat
+
+We have seen before with the CAP analysis that some soil properties, mainly pH, SOC, and C:N, may drive community differences in these habitats. Lets see if there is any relationship between any of these soil properties and the βNTI in each habitat individually. If so, then it may be these factors driving community assembly. 
+
+First we need a function for running the mantel test. This just makes things easier later with less code.
+
+```{r, message=FALSE, warning=FALSE}
+Sams.mantel.test = function(df, seed=NULL) {
+  # Run mantel test to see if there is a correlation
+  delta.mat = df %>%
+    select(Sample_1, Sample_2, delta) %>%
+    spread(Sample_2, delta)
+  rownames(delta.mat) = delta.mat$Sample_1
+  delta.mat$Sample_1 = NULL
+  delta.mat = delta.mat[names(sort(rowSums(!is.na(delta.mat)), decreasing = F)), names(sort(colSums(!is.na(delta.mat)), decreasing = T))]
+  delta.mat = as.dist(delta.mat)
+  
+  bNTI.mat = df %>%
+    select(Sample_1, Sample_2, bNTI) %>%
+    spread(Sample_2, bNTI)
+  rownames(bNTI.mat) = bNTI.mat$Sample_1
+  bNTI.mat$Sample_1 = NULL
+  bNTI.mat = bNTI.mat[names(sort(rowSums(!is.na(bNTI.mat)), decreasing = F)), names(sort(colSums(!is.na(bNTI.mat)), decreasing = T))]
+  bNTI.mat = as.dist(bNTI.mat)
+  if (!(is.null(seed))){
+    set.seed(seed)
+  }
+  mantel.res = vegan::mantel(delta.mat, bNTI.mat)
+  return(mantel.res)
+}
+```
+
+
+### pH
+
+First lets see if βNTI is correlated with the difference in pH between sites within each land use.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Get delta pH for all pairs
+pH.meta1=data.frame(sample_data(bulk.physeq)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_1 = X.Sample, pH_1 = pH)
+pH.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_2 = X.Sample, pH_2 = pH)
+
+bNTI.pH.df = inner_join(bNTI.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  mutate(delta = abs(pH_1-pH_2))
+
+# Run mantel test to see if there is a correlation
+ag.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "meadow"), seed=72)
+f.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "forest"), seed=72)
+
+pH.mantel.coef = data.frame(r = c(ag.pH.mantel$statistic, m.pH.mantel$statistic, f.pH.mantel$statistic),
+                            p = c(ag.pH.mantel$signif, m.pH.mantel$signif, f.pH.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+# Plot
+bNTI.pH.plot = ggplot(bNTI.pH.df, aes(x=delta, y=bNTI)) +
+  geom_point() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  geom_text(data=pH.mantel.coef, x=0.5, y=7, aes(label=paste("r = ", round(r, 3), "\n", "p = ", round(p, 3), sep=""))) +
+  labs(x="Delta pH", y="βNTI") +
+  theme(legend.position = "none") +
+  facet_grid(~ecosystem)
+
+bNTI.pH.plot
+```
+
+There is a significant positive correlation between βNTI and difference in pH between sites for all three land uses. For the most part, sites with very similar pHs have a βNTI < -2 suggesting homogeneous selection pressure, while sites with very dissimilar pHs have a βNTI > 2 suggesting varaible selection. The correlation is strongest in forest soils and less so in agriculture.
+
+### Soil organic matter
+
+First lets see if βNTI is correlated with the difference in percent soil organic matter between sites within each land use.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Get delta % SOM for all pairs
+SOC.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, organic_content_perc) %>%
+  rename(Sample_1 = X.Sample, SOC_1 = organic_content_perc)
+SOC.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, organic_content_perc) %>%
+  rename(Sample_2 = X.Sample, SOC_2 = organic_content_perc)
+
+bNTI.SOC.df = inner_join(bNTI.df, SOC.meta1) %>%
+  inner_join(SOC.meta2) %>%
+  mutate(delta = abs(SOC_1-SOC_2))
+
+# Run mantel test to see if there is a correlation
+ag.SOC.mantel = Sams.mantel.test(bNTI.SOC.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.SOC.mantel = Sams.mantel.test(bNTI.SOC.df %>% filter(ecosystem == "meadow"), seed=72)
+f.SOC.mantel = Sams.mantel.test(bNTI.SOC.df %>% filter(ecosystem == "forest"), seed=72)
+
+SOC.mantel.coef = data.frame(r = c(ag.SOC.mantel$statistic, m.SOC.mantel$statistic, f.SOC.mantel$statistic),
+                            p = c(ag.SOC.mantel$signif, m.SOC.mantel$signif, f.SOC.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+
+# Plot
+bNTI.SOC.plot = ggplot(bNTI.SOC.df, aes(x=delta, y=bNTI)) +
+  geom_point() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  geom_text(data=SOC.mantel.coef, x=0.095, y=-8, aes(label=paste("r= ", round(r, 3), "\n", "p= ", round(p, 3), sep=""))) +
+  labs(x="Delta SOC (%)", y="βNTI") +
+  theme(legend.position = "none") +
+  facet_grid(~ecosystem)
+
+bNTI.SOC.plot
+```
+
+There is no significant correlation between βNTI and differenc in SOC in any land use
+
+### C:N Ratio
+
+First lets see if βNTI is correlated with the difference in C:N ratio between sites within each land use.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Get delta C:N for all pairs
+CN.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, percent_N, percent_C) %>%
+  rename(Sample_1 = X.Sample) %>%
+  mutate(CN_1 = percent_C/percent_N) %>%
+  select(-percent_N, -percent_C)
+CN.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, percent_N, percent_C) %>%
+  rename(Sample_2 = X.Sample) %>%
+  mutate(CN_2 = percent_C/percent_N) %>%
+  select(-percent_N, -percent_C)
+
+bNTI.CN.df = inner_join(bNTI.df, CN.meta1) %>%
+  inner_join(CN.meta2) %>%
+  mutate(delta = abs(CN_1-CN_2))
+
+# Run mantel test to see if there is a correlation
+ag.CN.mantel = Sams.mantel.test(bNTI.CN.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.CN.mantel = Sams.mantel.test(bNTI.CN.df %>% filter(ecosystem == "meadow"), seed=72)
+f.CN.mantel = Sams.mantel.test(bNTI.CN.df %>% filter(ecosystem == "forest"), seed=72)
+
+CN.mantel.coef = data.frame(r = c(ag.CN.mantel$statistic, m.CN.mantel$statistic, f.CN.mantel$statistic),
+                            p = c(ag.CN.mantel$signif, m.CN.mantel$signif, f.CN.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+# Plot
+bNTI.CN.plot = ggplot(bNTI.CN.df, aes(x=delta, y=bNTI)) +
+  geom_point() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  geom_text(data=CN.mantel.coef, x=5.5, y=-8, aes(label=paste("r= ", round(r, 3), "\n", "p= ", round(p, 3), sep=""))) +
+  labs(x="Delta C:N", y="βNTI") +
+  theme(legend.position = "none") +
+  facet_grid(~ecosystem)
+
+bNTI.CN.plot
+```
+
+There is no significant relationship between βNTI and difference in C:N ratio in any land use
+
+### Percent Sand
+
+First lets see if βNTI is correlated with the difference in percent sand between sites within each land use.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Get delta % sand for all pairs
+sand.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, sand__perc) %>%
+  rename(Sample_1 = X.Sample, sand_1 = sand__perc)
+sand.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, sand__perc) %>%
+  rename(Sample_2 = X.Sample, sand_2 = sand__perc)
+
+bNTI.sand.df = inner_join(bNTI.df, sand.meta1) %>%
+  inner_join(sand.meta2) %>%
+  mutate(delta = abs(sand_1-sand_2))
+
+# Run mantel test to see if there is a correlation
+ag.sand.mantel = Sams.mantel.test(bNTI.sand.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.sand.mantel = Sams.mantel.test(bNTI.sand.df %>% filter(ecosystem == "meadow"), seed=72)
+f.sand.mantel = Sams.mantel.test(bNTI.sand.df %>% filter(ecosystem == "forest"), seed=72)
+
+sand.mantel.coef = data.frame(r = c(ag.sand.mantel$statistic, m.sand.mantel$statistic, f.sand.mantel$statistic),
+                            p = c(ag.sand.mantel$signif, m.sand.mantel$signif, f.sand.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+# Plot
+bNTI.sand.plot = ggplot(bNTI.sand.df, aes(x=delta, y=bNTI)) +
+  geom_point() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  geom_text(data=sand.mantel.coef, x=57, y=7, aes(label=paste("r= ", round(r, 3), "\n", "p= ", round(p, 3), sep=""))) +
+  labs(x="Delta sand (%)", y="βNTI") +
+  theme(legend.position = "none") +
+  facet_grid(~ecosystem)
+
+bNTI.sand.plot
+```
+
+There is no significant relationship between βNTI and difference in sand content in any land use.
+
+### Geographic distance
+
+First lets see if βNTI is correlated with the geographic distance between sites within each land use.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Get the geographic distances
+geodist.meta1 = data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, longitude, latitude) %>%
+  rename(Sample_1 = X.Sample, longitude1 = longitude, latitude1 = latitude)
+geodist.meta2 = data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, longitude, latitude) %>%
+  rename(Sample_2 = X.Sample, longitude2 = longitude, latitude2 = latitude)
+
+bNTI.geodist.df = inner_join(bNTI.df, geodist.meta1) %>%
+  inner_join(geodist.meta2)
+
+Coord1.mat = as.matrix(bNTI.geodist.df %>% select(longitude1, latitude1))
+Coord2.mat = as.matrix(bNTI.geodist.df %>% select(longitude2, latitude2))
+
+bNTI.geodist.df$delta = distHaversine(Coord1.mat, Coord2.mat)/1000
+
+# Run mantel test to see if there is a correlation
+ag.geodist.mantel = Sams.mantel.test(bNTI.geodist.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.geodist.mantel = Sams.mantel.test(bNTI.geodist.df %>% filter(ecosystem == "meadow"), seed=72)
+f.geodist.mantel = Sams.mantel.test(bNTI.geodist.df %>% filter(ecosystem == "forest"), seed=72)
+
+geodist.mantel.coef = data.frame(r = c(ag.geodist.mantel$statistic, m.geodist.mantel$statistic, f.geodist.mantel$statistic),
+                            p = c(ag.geodist.mantel$signif, m.geodist.mantel$signif, f.geodist.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+# Plot
+bNTI.geodist.plot = ggplot(bNTI.geodist.df, aes(x=delta, y=bNTI)) +
+  geom_point() +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  geom_text(data=geodist.mantel.coef, x=10, y=8, aes(label=paste("r= ", round(r, 3), "\n", "p= ", round(p, 3), sep=""))) +
+  labs(x="Geographic distance (km)", y="βNTI") +
+  theme(legend.position = "none") +
+  facet_grid(~ecosystem)
+
+bNTI.geodist.plot
+
+```
+
+There is no significant relationship between βNTI and geographic distance in any land use
+
+
+### Figure for manuscript: pH
+
+For the manuscript we want a figure showing the correlation between difference in pH across samples and βNTI for each land use and the entire region. The analysis looking across the entire region can also be found in bNTI_soil_properties.Rmd.
+
+#### βNTI vs. ∆pH across the region
+We saw that delta pH was significantly correlated with βNTI and strongly across the entire region (see bNTI_soil_properties.Rmd). Lets rerun that analysis here so we can put it in the figure.
+
+```{r, message=FALSE, warning=FALSE, fig.height=5, fig.width=5}
+# Land use shapes
+LandUse.shapes = c("agriculture" = 15, "meadow" = 16, "forest" = 17, "across" = 5)
+
+# get land use metadata and add it to the βNTI data
+eco.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_1 = X.Sample, ecosystem_1 = ecosystem)
+eco.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, ecosystem) %>%
+  rename(Sample_2 = X.Sample, ecosystem_2 = ecosystem)
+
+# get pH metadata and add it to the βNTI data
+pH.meta1=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_1 = X.Sample, pH_1 = pH)
+pH.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_2 = X.Sample, pH_2 = pH)
+
+full.bNTI.pH.df = inner_join(full.bNTI.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  inner_join(eco.meta1) %>%
+  inner_join(eco.meta2) %>%
+  mutate(delta = abs(pH_1-pH_2),
+         crosstype = ifelse(ecosystem_1 == ecosystem_2, as.character(ecosystem_1), "across"))
+
+# Run mantel test to see if there is a correlation
+pH.mantel = Sams.mantel.test(full.bNTI.pH.df, seed=72)
+
+
+# Plot
+full.bNTI.pH.plot = ggplot(full.bNTI.pH.df, aes(x=delta, y=bNTI)) +
+  geom_point(aes(shape=crosstype), size=3) +
+  scale_shape_manual(values=LandUse.shapes) +
+  geom_hline(yintercept = 2, linetype=2) +
+  geom_hline(yintercept = -2, linetype=2) +
+  ylim(-10, 14) +
+  xlim(0, 3.75) +
+  annotate("text", x=0.75, y=11, size=4,
+           label=paste("r = ", round(pH.mantel$statistic, 3), "\n", "p = ", round(pH.mantel$signif, 3), sep="")) +
+  labs(x="Delta pH", y="βNTI") +
+  theme_bw() +
+  theme(legend.position = "none",
+        legend.text = element_text(size=12),
+        legend.title = element_text(size=12),
+        axis.text = element_text(size=12),
+        axis.title=element_blank(),
+        plot.margin = unit(c(7,1,1,5), "mm"))
+```
+
+
+#### βNTI vs. ∆ pH within each habitat
+
+Lets just run the analysis we ran before looking at ∆pH within the land use regimes again so that we can add it to the figure.
+
+```{r, message=FALSE, warning=FALSE, fig.height=3, fig.width=6}
+# Land use shapes
+LandUse.shapes = c("agriculture" = 15, "meadow" = 16, "forest" = 17)
+
+# Get delta pH for all pairs
+pH.meta1=data.frame(sample_data(bulk.physeq)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_1 = X.Sample, pH_1 = pH)
+pH.meta2=data.frame(sample_data(bulk.physeq.rare)) %>%
+  select(X.Sample, pH) %>%
+  rename(Sample_2 = X.Sample, pH_2 = pH)
+
+bNTI.pH.df = inner_join(bNTI.df, pH.meta1) %>%
+  inner_join(pH.meta2) %>%
+  mutate(delta = abs(pH_1-pH_2))
+
+# Run mantel test to see if there is a correlation
+ag.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "agriculture"), seed=72)
+m.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "meadow"), seed=72)
+f.pH.mantel = Sams.mantel.test(bNTI.pH.df %>% filter(ecosystem == "forest"), seed=72)
+
+pH.mantel.coef = data.frame(r = c(ag.pH.mantel$statistic, m.pH.mantel$statistic, f.pH.mantel$statistic),
+                            p = c(ag.pH.mantel$signif, m.pH.mantel$signif, f.pH.mantel$signif),
+                            ecosystem = c("agriculture", "meadow", "forest"))
+
+
+# Plot
+bNTI.pH.plot.list = list()
+for (habitat in unique(bNTI.pH.df$ecosystem)){
+  sub.mantel = pH.mantel.coef[pH.mantel.coef$ecosystem==habitat,]
+  bNTI.pH.plot.list[[habitat]] = ggplot(bNTI.pH.df[bNTI.pH.df$ecosystem == habitat,], aes(x=delta, y=bNTI)) +
+    geom_point(aes(shape=ecosystem), size=3) +
+    scale_shape_manual(values=LandUse.shapes) +
+    geom_hline(yintercept = 2, linetype=2) +
+    geom_hline(yintercept = -2, linetype=2) +
+    ylim(-10, 14) +
+    xlim(0, 3.75) +
+    annotate("text", x=0.75, y=11, label=paste("r = ", round(sub.mantel$r, 3), "\n", "p = ", round(sub.mantel$p, 3), sep=""),
+             size=4) +
+    labs(x="Delta pH", y="βNTI") +
+    theme_bw() +
+    theme(legend.position = "none",
+          legend.text = element_text(size=12),
+          legend.title = element_text(size=12),
+          axis.text = element_text(size=12),
+          axis.title=element_blank(),
+          plot.margin = unit(c(7,1,1,5), "mm"))
+}
+```
+
+#### Merge figures
+Now put all the figures together into a publication quality figure.
+
+```{r, message=FALSE, warning=FALSE, fig.height=6.61417, fig.width=6.61417}
+# Plot together
+bNTI.pH.plot = cowplot::plot_grid(full.bNTI.pH.plot, bNTI.pH.plot.list[["agriculture"]],
+                                  bNTI.pH.plot.list[["meadow"]], bNTI.pH.plot.list[["forest"]],
+                                  nrow = 2, ncol=2, labels=c("A", "B", "C", "D"))
+
+y.grob <- textGrob("βNTI", 
+                   gp=gpar(fontsize=15), rot=90)
+
+x.grob <- textGrob("∆pH between sites", 
+                   gp=gpar(fontsize=15))
+
+bNTI.ph.full.plot = arrangeGrob(bNTI.pH.plot, left = y.grob, bottom = x.grob)
+plot(bNTI.ph.full.plot)
+
+#ggsave("bNTI_pH.tiff", plot=bNTI.ph.full.plot, device="tiff", 
+#       path="/home/sam/notebooks/fullCyc2/figures/community_assembly_MS/",
+#       width=168, height=168, units="mm", dpi=600)
+
+```
+
+## Session Info
+
+```{r}
+sessionInfo()
+```
