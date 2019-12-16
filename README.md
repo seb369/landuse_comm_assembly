@@ -2,7 +2,7 @@
 
 This repository contains the code for analysis and figure generatation for the paper:
 
-Barnett SE, Youngblut ND, Buckley DH, *In press* Soil characteristics and land-use drive bacterial community assembly patterns, *FEMS Microbiology Ecology*
+Barnett SE, Youngblut ND, Buckley DH, *In press* Soil characteristics and land-use drive bacterial community assembly patterns, *FEMS Microbiology Ecology*, fiz194, doi: [10.1093/femsec/fiz194](https://doi.org/10.1093/femsec/fiz194)
 
 ## Contents
 Here is a brief description of each of the files:
